@@ -6,42 +6,49 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 
 class MovieRecommender:
-    """
-    Content-based Movie Recommendation System.
-
-    Uses movie genres as text features and TF-IDF + cosine similarity
-    to recommend movies similar to a selected movie.
-    """
+    """Recommend movies based on their genres."""
 
     def __init__(self, data_path="data/movies.csv"):
         self.data_path = data_path
         self.movies = None
         self.tfidf_matrix = None
         self.similarity_matrix = None
-        self.indices = None
+        self.movie_indices = None
 
     def load_data(self):
-        """Load and clean the MovieLens movie dataset."""
+        """Read the movie dataset and clean the data."""
 
         self.movies = pd.read_csv(self.data_path)
 
-        # Remove duplicate movies
-        self.movies.drop_duplicates(subset="movieId", inplace=True)
+        # Remove duplicate movie records
+        self.movies.drop_duplicates(
+            subset="movieId",
+            inplace=True
+        )
 
-        # Remove missing titles
-        self.movies.dropna(subset=["title"], inplace=True)
+        # Movies without a title are not useful for recommendations
+        self.movies.dropna(
+            subset=["title"],
+            inplace=True
+        )
 
-        # Fill missing genres
+        # Replace missing genres with an empty string
         self.movies["genres"] = self.movies["genres"].fillna("")
 
-        # Clean title
-        self.movies["title"] = self.movies["title"].apply(self.clean_title)
+        # Remove the release year from movie titles
+        self.movies["title"] = self.movies["title"].apply(
+            self.clean_title
+        )
 
-        # Convert genres into text
+        # Convert "|" between genres into spaces
         self.movies["genres"] = (
             self.movies["genres"]
             .str.replace("|", " ", regex=False)
-            .str.replace("(no genres listed)", "", regex=False)
+            .str.replace(
+                "(no genres listed)",
+                "",
+                regex=False
+            )
         )
 
         self.movies.reset_index(drop=True, inplace=True)
@@ -50,19 +57,20 @@ class MovieRecommender:
 
     @staticmethod
     def clean_title(title):
-        """Remove year from movie title."""
+        """Remove the year from a movie title."""
 
         title = re.sub(r"\(\d{4}\)", "", title)
         title = re.sub(r"\s+", " ", title)
 
         return title.strip()
 
-    def train(self):
-        """Create TF-IDF vectors and cosine similarity matrix."""
+    def train_model(self):
+        """Convert genres into vectors and calculate similarities."""
 
         if self.movies is None:
             self.load_data()
 
+        # Convert movie genres into TF-IDF features
         vectorizer = TfidfVectorizer(
             stop_words="english",
             ngram_range=(1, 2)
@@ -72,103 +80,139 @@ class MovieRecommender:
             self.movies["genres"]
         )
 
+        # Compare every movie with every other movie
         self.similarity_matrix = cosine_similarity(
-            self.tfidf_matrix,
             self.tfidf_matrix
         )
 
-        self.indices = pd.Series(
+        # Store movie titles with their dataframe index
+        self.movie_indices = pd.Series(
             self.movies.index,
             index=self.movies["title"].str.lower()
         ).drop_duplicates()
 
     def recommend(self, movie_title, number_of_recommendations=10):
-        """
-        Recommend movies similar to the selected movie.
-        """
+        """Return movies similar to the movie entered by the user."""
 
         if self.similarity_matrix is None:
-            self.train()
+            self.train_model()
 
         movie_title = movie_title.lower().strip()
 
-        # Exact match
-        if movie_title not in self.indices:
-            # Try partial matching
-            matches = self.movies[
+        # Look for an exact movie title first
+        if movie_title in self.movie_indices:
+            movie_index = self.movie_indices[movie_title]
+
+            # Handle duplicate movie titles
+            if isinstance(movie_index, pd.Series):
+                movie_index = movie_index.iloc[0]
+
+        else:
+            # If there is no exact match, try a partial match
+            matching_movies = self.movies[
                 self.movies["title"]
                 .str.lower()
                 .str.contains(movie_title, na=False)
             ]
 
-            if matches.empty:
+            if matching_movies.empty:
                 return pd.DataFrame(
                     columns=["title", "genres", "similarity"]
                 )
 
-            movie_index = matches.index[0]
+            movie_index = matching_movies.index[0]
 
-        else:
-            movie_index = self.indices[movie_title]
-
-            # In case duplicate titles return multiple indices
-            if isinstance(movie_index, pd.Series):
-                movie_index = movie_index.iloc[0]
-
-        similarity_scores = list(
-            enumerate(self.similarity_matrix[movie_index])
+        # Get similarity scores for the selected movie
+        scores = list(
+            enumerate(
+                self.similarity_matrix[movie_index]
+            )
         )
 
-        # Sort by similarity score
-        similarity_scores = sorted(
-            similarity_scores,
-            key=lambda x: x[1],
+        # Put the most similar movies first
+        scores.sort(
+            key=lambda item: item[1],
             reverse=True
         )
 
-        # Remove the selected movie itself
-        similarity_scores = [
-            item for item in similarity_scores
+        # Don't recommend the movie the user already selected
+        scores = [
+            item for item in scores
             if item[0] != movie_index
         ]
 
-        top_movies = similarity_scores[
+        # Select the requested number of recommendations
+        top_movies = scores[
             :number_of_recommendations
         ]
 
-        movie_indices = [item[0] for item in top_movies]
-        scores = [item[1] for item in top_movies]
+        movie_indices = [
+            item[0]
+            for item in top_movies
+        ]
+
+        similarity_scores = [
+            item[1]
+            for item in top_movies
+        ]
 
         recommendations = self.movies.iloc[
             movie_indices
         ][["title", "genres"]].copy()
 
-        recommendations["similarity"] = scores
+        recommendations["similarity"] = similarity_scores
 
         return recommendations.reset_index(drop=True)
 
 
-if __name__ == "__main__":
+def main():
+    """Run the movie recommendation program."""
 
-    recommender = MovieRecommender("data/movies.csv")
+    recommender = MovieRecommender()
 
+    print("Loading movie data...")
     recommender.load_data()
-    recommender.train()
 
-    movie = input("Enter a movie name: ")
+    print("Preparing recommendation model...")
+    recommender.train_model()
+
+    print("\n" + "=" * 45)
+    print("       MOVIE RECOMMENDATION SYSTEM")
+    print("=" * 45)
+
+    movie_name = input(
+        "\nEnter a movie name: "
+    ).strip()
+
+    if not movie_name:
+        print("Please enter a movie name.")
+        return
 
     recommendations = recommender.recommend(
-        movie,
+        movie_name,
         number_of_recommendations=10
     )
 
     if recommendations.empty:
-        print("\nMovie not found.")
-    else:
-        print("\nRecommended Movies:\n")
+        print(
+            f"\nSorry, I couldn't find a movie "
+            f"matching '{movie_name}'."
+        )
+        return
 
-        for i, row in recommendations.iterrows():
-            print(
-                f"{i + 1}. {row['title']} "
-                f"({row['similarity']:.2f})"
-            )
+    print(
+        f"\nMovies similar to '{movie_name}':\n"
+    )
+
+    for number, (_, movie) in enumerate(
+        recommendations.iterrows(),
+        start=1
+    ):
+        print(
+            f"{number}. {movie['title']} "
+            f"- Similarity: {movie['similarity']:.2f}"
+        )
+
+
+if __name__ == "__main__":
+    main()
